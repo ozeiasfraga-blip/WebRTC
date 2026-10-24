@@ -1,0 +1,18 @@
+{
+  "name": "sala-de-tela",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Compartilhamento de tela com chat no navegador (WebRTC), sem depender de terceiros.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "cert": "node scripts/gen-cert.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "selfsigned": "^2.4.1",
+    "ws": "^8.18.0"
+  }
+}
