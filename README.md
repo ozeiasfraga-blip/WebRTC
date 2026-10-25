@@ -11,6 +11,8 @@ programa para quem assiste: é só abrir o link no navegador.
 - Tela cheia por tile, duplo clique para dar destaque a alguém
 - Nada é gravado: vídeo e som vão **direto de navegador para navegador** (P2P)
 
+**No ar em:** https://survivorsstrugglepve.com.br/sala/
+
 ---
 
 ## 1. Como rodar (Windows)
@@ -104,7 +106,43 @@ $env:TURN_PASS="senha"
 npm start
 ```
 
-## 5. Configurações (variáveis de ambiente)
+## 5. Publicar no seu domínio (XAMPP + Apache)
+
+Nesta máquina o site já está no ar em **https://survivorsstrugglepve.com.br/sala/**
+usando o Apache do XAMPP e o certificado Let's Encrypt que já existia.
+
+Como está montado:
+
+| Peça | Papel |
+| --- | --- |
+| `C:\xampp\htdocs\sala` | interface (HTML/CSS/JS) servida pelo Apache |
+| Node em `127.0.0.1:8090` | sinalização WebRTC + chat |
+| `conf/extra/httpd-sala.conf` | encaminha `/sala/ws` e `/sala/config.json` para o Node |
+| `mod_proxy_wstunnel` | habilitado no `httpd.conf` (necessário para WebSocket) |
+
+Depois de alterar o código, publique com:
+
+```powershell
+cd "D:\Acesso remoto"
+.\publicar.bat
+```
+
+Ele copia `public\` para `htdocs\sala` e sobe o Node se estiver parado.
+
+O Node também sobe junto com o Windows: o atalho **Sala de Tela** na pasta
+Iniciar (`Win+R` → `shell:startup`) executa `servidor-oculto.vbs`, sem janela.
+Se quiser que não suba mais sozinho, apague esse atalho.
+
+Detalhes que importam:
+
+- Se mudar a porta do Node, ajuste as duas linhas `ProxyPass` em `httpd-sala.conf`.
+- O Apache precisa de `mod_proxy` + `mod_proxy_wstunnel` (já ativados).
+- Se a página abrir mas o chat/compartilhar ficar em "Conectando…", o Node está
+  parado: rode `publicar.bat` e recarregue.
+- Como o certificado é o do seu domínio, não aparece aviso e o compartilhamento de
+  tela funciona sem nenhum clique extra.
+
+## 6. Configurações (variáveis de ambiente)
 
 | Variável      | Padrão | Para quê                                          |
 | ------------- | ------ | ------------------------------------------------- |
@@ -118,7 +156,7 @@ npm start
 
 Exemplo: `$env:PORT="9000"; npm start`
 
-## 6. Como funciona
+## 7. Como funciona
 
 ```
 navegador A  ⇄  servidor Node (sinalização WS + chat)  ⇄  navegador B
@@ -135,7 +173,7 @@ navegador A  ⇄  servidor Node (sinalização WS + chat)  ⇄  navegador B
 - O chat fica só na memória do servidor: nada é salvo em disco. Quem entra depois não
   vê as mensagens anteriores (como um chat de sala ao vivo).
 
-## 7. Estrutura
+## 8. Estrutura
 
 ```
 server.js            servidor (arquivos estáticos, WebSocket, salas, chat, HTTPS local)
@@ -143,11 +181,13 @@ public/index.html    interface
 public/styles.css    aparência
 public/app.js        WebRTC, tela, microfone, chat, UI
 scripts/gen-cert.js  regenera o certificado local (npm run cert)
-iniciar.bat          atalho para Windows
+iniciar.bat          atalho para rodar localmente no Windows
+publicar.bat         copia a interface para htdocs\sala e sobe o Node
+servidor-oculto.vbs  inicia o Node sem janela (usado no Inicializar do Windows)
 certs/               certificado e chave gerados (não versionar)
 ```
 
-## 8. Problemas comuns
+## 9. Problemas comuns
 
 | Sintoma | Causa provável / solução |
 | --- | --- |
@@ -157,8 +197,9 @@ certs/               certificado e chave gerados (não versionar)
 | “A porta já está em uso” | Rode com outra porta: `$env:PORT="8092"; npm start` |
 | Aviso de certificado em toda visita | Normal no certificado local; use um túnel HTTPS se incomodar |
 | Vídeo travado/quadriculado | Baixe a **Qualidade** para “Econômica” ou feche outras abas pesadas |
+| Página abre, mas o chat fica em “Conectando…” | O Node está parado: rode `publicar.bat` (ou `npm start`) |
 
-## 9. Privacidade e limites
+## 10. Privacidade e limites
 
 - Não há login, banco de dados nem gravação. As mensagens e a sessão somem quando a sala esvazia.
 - Quem tiver o código/link entra na sala. Use códigos difíceis de adivinhar: o botão

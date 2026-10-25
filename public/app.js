@@ -20,6 +20,9 @@
   const LS_NAME = 'sala-de-tela:nome';
   const AUDIO_MAX = 1; // ganho máximo do mix
 
+  // Funciona tanto na raiz (localhost:8090) quanto em subpasta (ex.: /sala/ no Apache).
+  const BASE_PATH = location.pathname.replace(/[^/]*$/, '');
+
   const randomCode = (n = 4) =>
     Array.from({ length: n }, () => ROOM_CHARS[Math.floor(Math.random() * ROOM_CHARS.length)]).join('');
 
@@ -180,7 +183,7 @@
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     let ws;
     try {
-      ws = new WebSocket(`${proto}//${location.host}/ws`);
+      ws = new WebSocket(`${proto}//${location.host}${BASE_PATH}ws`);
     } catch (err) {
       lobbyMsg.textContent = 'Não foi possível conectar ao servidor.';
       joinBtn.disabled = false;
@@ -947,7 +950,7 @@
     state.room = room;
 
     try {
-      const cfg = await fetch('/config.json', { cache: 'no-store' }).then((r) => r.json());
+      const cfg = await fetch(`${BASE_PATH}config.json`, { cache: 'no-store' }).then((r) => r.json());
       if (cfg && Array.isArray(cfg.iceServers) && cfg.iceServers.length) state.iceServers = cfg.iceServers;
     } catch {
       /* segue com STUN padrão */
