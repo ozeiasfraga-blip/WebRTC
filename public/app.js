@@ -18,6 +18,8 @@
   const $ = (sel) => document.querySelector(sel);
   const ROOM_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const LS_NAME = 'sala-de-tela:nome';
+  const LS_TECH = 'sala-de-tela:tecnico';
+  const LS_COMPAT = 'sala-de-tela:compat';
   const AUDIO_MAX = 1; // ganho máximo do mix
 
   // Funciona tanto na raiz (localhost:8090) quanto em subpasta (ex.: /sala/ no Apache).
@@ -56,9 +58,15 @@
     mic: { stream: null, track: null, enabled: false },
     mix: { ctx: null, dest: null, micGain: null, screenGain: null, micSrc: null, screenSrc: null, track: null },
     maxBitrate: 2500000,
+    compat: false,
     chatOpen: false,
     unread: 0,
     spotlightId: null,
+    role: 'client', // 'client' | 'tech'
+    agent: { code: null, connected: false, host: null },
+    tech: { peerId: null, status: 'idle', keys: false }, // quando EU sou o técnico
+    ctrlIn: null, // quando EU sou o assistido: { techId, name }
+    pendingAsk: null, // pedido de controle aguardando resposta
   };
 
   /* ------------------------------------------------------------------ */
@@ -100,6 +108,41 @@
 
   const toastEl = $('#toast');
   const fsNote = $('#fsNote');
+
+  // suporte remoto
+  const techModeEl = $('#techMode');
+  const ctrlBanner = $('#ctrlBanner');
+  const ctrlBannerText = $('#ctrlBannerText');
+  const ctrlStopBtn = $('#ctrlStopBtn');
+  const techBar = $('#techBar');
+  const techAskBtn = $('#techAskBtn');
+  const techStatusEl = $('#techStatus');
+  const techKeysBtn = $('#techKeysBtn');
+  const techReleaseBtn = $('#techReleaseBtn');
+  const techText = $('#techText');
+  const techTextBtn = $('#techTextBtn');
+  const techPasteEl = techText.closest('.tech-paste');
+  const supportBtn = $('#supportBtn');
+  const supportPanel = $('#supportPanel');
+  const supportClose = $('#supportClose');
+  const agentCodeEl = $('#agentCode');
+  const agentGenBtn = $('#agentGenBtn');
+  const agentDownload = $('#agentDownload');
+  const agentStatusEl = $('#agentStatus');
+  const agentStatusText = $('#agentStatusText');
+  const ctrlAsk = $('#ctrlAsk');
+  const ctrlAskWho = $('#ctrlAskWho');
+  const ctrlAllow = $('#ctrlAllow');
+  const ctrlDeny = $('#ctrlDeny');
+
+  // aviso de captura preta
+  const captureWarn = $('#captureWarn');
+  const captureWarnCompat = $('#captureWarnCompat');
+  const captureWarnHelp = $('#captureWarnHelp');
+  const captureWarnClose = $('#captureWarnClose');
+  const captureHelp = $('#captureHelp');
+  const compatBrowser = $('#compatBrowser');
+  const diagBtn = $('#diagBtn');
 
   /* ------------------------------------------------------------------ */
   /* toast / chat                                                        */
@@ -194,7 +237,7 @@
 
     ws.onopen = () => {
       liveDot.classList.remove('off');
-      send({ type: 'join', room: state.room, name: state.name });
+      send({ type: 'join', room: state.room, name: state.name, role: state.role });
     };
 
     ws.onmessage = (ev) => {
@@ -230,11 +273,18 @@
         state.selfId = msg.selfId;
         state.room = msg.room;
         state.name = msg.name || state.name;
+        if (msg.role) state.role = msg.role;
         if (Array.isArray(msg.iceServers) && msg.iceServers.length) state.iceServers = msg.iceServers;
         if (msg.maxPeers) state.maxPeers = msg.maxPeers;
+        if (msg.agent) {
+          state.agent.connected = !!msg.agent.connected;
+          state.agent.host = msg.agent.host || null;
+        }
         enterCall();
         for (const peer of msg.peers || []) createPeer(peer, false);
         updatePeople();
+        updateAgentStatus();
+        updateTechBar();
         break;
       }
 
@@ -277,6 +327,7 @@
         if (!p) return;
         p.media = { screen: !!msg.media?.screen, mic: !!msg.media?.mic };
         updatePeerTile(p);
+        updateTechBar();
         break;
       }
 
@@ -300,6 +351,114 @@
         break;
       }
 
+      /* ---------------- suporte remoto ---------------- */
+
+      case 'agent-code': {
+        state.agent.code = msg.code;
+        agentCodeEl.textContent = msg.code;
+        if (typeof msg.connected === 'boolean') {
+          state.agent.connected = msg.connected;
+          updateAgentStatus();
+        }
+        const base = encodeURIComponent(BASE_PATH);
+        const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+        agentDownload.href = `${BASE_PATH}agente.bat?codigo=${encodeURIComponent(msg.code)}&base=${base}&proto=${proto}`;
+        agentDownload.hidden = false;
+        break;
+      }
+
+      case 'agent-status': {
+        // O agente pertence a um cliente específico (msg.clientId).
+        // O técnico guarda o estado por pessoa; o cliente só usa o próprio.
+        const peer = msg.clientId ? state.peers.get(msg.clientId) : null;
+        if (peer) {
+          peer.agentConnected = !!msg.connected;
+          peer.agentHost = msg.host || null;
+          updateTechBar();
+          if (!msg.connected && state.tech.peerId === peer.id) resetTechControl(true);
+        }
+        if (msg.clientId && msg.clientId !== state.selfId) break;
+
+        const before = state.agent.connected;
+        state.agent.connected = !!msg.connected;
+        state.agent.host = msg.host || null;
+        updateAgentStatus();
+        updateTechBar();
+        if (state.agent.connected && !before) {
+          toast(`Agente de suporte conectado${state.agent.host ? ' em ' + state.agent.host : ''}.`, 5000);
+        }
+        if (!state.agent.connected && before && state.ctrlIn) {
+          setCtrlBanner(false);
+          state.ctrlIn = null;
+        }
+        break;
+      }
+
+      case 'control-request': {
+        if (state.role === 'tech') return;
+        state.pendingAsk = { techId: msg.from, name: msg.name || 'Técnico' };
+        showControlRequest(msg.name);
+        toast(`${msg.name || 'Um técnico'} quer controlar este computador.`, 7000);
+        break;
+      }
+
+      case 'control-active': {
+        if (msg.with) {
+          state.ctrlIn = { techId: msg.with, name: msg.name || 'Técnico' };
+          setCtrlBanner(true, state.ctrlIn.name);
+          if (state.pendingAsk) {
+            state.pendingAsk = null;
+            ctrlAsk.hidden = true;
+          }
+          toast(`Controle liberado para ${state.ctrlIn.name}.`, 5000);
+        } else {
+          state.ctrlIn = null;
+          setCtrlBanner(false);
+        }
+        break;
+      }
+
+      case 'control-pending': {
+        if (state.role !== 'tech') return;
+        state.tech.status = 'pending';
+        updateTechBar();
+        break;
+      }
+
+      case 'control-granted': {
+        if (state.role !== 'tech') return;
+        state.tech.peerId = msg.from;
+        state.tech.status = 'active';
+        updateTechBar();
+        enableControlCapture();
+        toast(`Você está no controle do PC de ${msg.name || 'cliente'}.`, 5000);
+        break;
+      }
+
+      case 'control-denied': {
+        if (state.role !== 'tech') return;
+        resetTechControl(false);
+        toast('O cliente não autorizou o controle.');
+        break;
+      }
+
+      case 'control-revoked': {
+        if (state.role === 'tech') {
+          resetTechControl(true);
+        }
+        if (state.ctrlIn && (!msg.from || msg.from === state.ctrlIn.techId)) {
+          state.ctrlIn = null;
+          setCtrlBanner(false);
+          toast('O controle remoto foi encerrado.', 5000);
+        }
+        break;
+      }
+
+      case 'control-error': {
+        toast(msg.message || 'Falha no controle.', 5000);
+        break;
+      }
+
       default:
         break;
     }
@@ -314,19 +473,35 @@
     call.hidden = false;
     roomCodeEl.textContent = state.room;
     try {
-      history.replaceState(null, '', `${location.pathname}?sala=${state.room}`);
+      const q = new URLSearchParams({ sala: state.room });
+      if (state.compat) q.set('compat', '1');
+      history.replaceState(null, '', `${location.pathname}?${q}`);
     } catch {
       /* ignora */
     }
+    updateCompatLink();
 
     state.selfTile = makeTile(state.selfId, state.name, true);
     state.selfTile.phTextEl.textContent = 'Clique em “Compartilhar tela”';
+
+    if (state.role === 'tech') {
+      // o técnico não precisa do próprio tile na tela
+      state.selfTile.tile.remove();
+      state.selfTile = null;
+      supportBtn.hidden = true;
+      supportPanel.hidden = true;
+      stageHint.textContent = 'Aguardando a pessoa compartilhar a tela…';
+    } else {
+      supportBtn.hidden = false;
+    }
+    updateTechBar();
 
     pushSystem(`Você entrou na sala ${state.room}`);
     updatePeople();
     updateSelf();
     setChatOpen(window.matchMedia('(min-width: 981px)').matches);
     setupMiscListeners();
+    startPeerWatch();
 
     if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
       toast('Este navegador não permite compartilhar tela. Use Chrome, Edge ou Firefox atualizado.', 7000);
@@ -433,8 +608,13 @@
       stage.classList.remove('spotlight');
     }
     p.tile.tile.remove();
+    if (state.tech.peerId === id) {
+      state.tech.peerId = null;
+      resetTechControl(false);
+    }
     updatePeople();
     updateSelf();
+    updateTechBar();
   }
 
   function toggleSpotlight(tile) {
@@ -518,6 +698,8 @@
       id: info.id,
       name: info.name || 'Convidado',
       media: { screen: !!(info.media && info.media.screen), mic: !!(info.media && info.media.mic) },
+      agentConnected: !!info.agent,
+      agentHost: null,
       pc,
       videoTr: null,
       audioTr: null,
@@ -704,9 +886,18 @@
       try {
         const params = sender.getParameters();
         if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
-        params.encodings[0].maxBitrate = state.maxBitrate;
+        params.encodings[0].maxBitrate = state.compat ? 900000 : state.maxBitrate;
         params.encodings[0].priority = 'high';
-        params.degradationPreference = 'maintain-resolution';
+        if (state.compat) {
+          // PC antigo: metade da resolução e no máximo 15 fps — evita codificador travado
+          params.encodings[0].scaleResolutionDownBy = 2;
+          params.encodings[0].maxFramerate = 15;
+          params.degradationPreference = 'balanced';
+        } else {
+          delete params.encodings[0].scaleResolutionDownBy;
+          params.encodings[0].maxFramerate = 30;
+          params.degradationPreference = 'maintain-resolution';
+        }
         await sender.setParameters(params);
       } catch {
         /* alguns navegadores só permitem depois de conectado */
@@ -789,6 +980,215 @@
 
   /* --- compartilhar tela -------------------------------------------- */
 
+  /**
+   * Pede a captura da tela tentando configurações cada vez mais simples.
+   * Em PCs antigos (driver de vídeo fraco) a primeira tentativa pode
+   * devolver um stream sem frames; a segunda costuma funcionar.
+   */
+  async function captureScreen() {
+    const tries = state.compat
+      ? [
+          { video: { frameRate: { ideal: 15, max: 20 }, width: { max: 1280 }, height: { max: 720 } }, audio: true },
+          { video: { frameRate: { ideal: 10, max: 15 } }, audio: false },
+          { video: true },
+        ]
+      : [
+          {
+            video: { frameRate: { ideal: 30, max: 60 } },
+            audio: {
+              echoCancellation: false,
+              noiseSuppression: false,
+              autoGainControl: false,
+            },
+            selfBrowserSurface: 'exclude',
+            surfaceSwitching: 'include',
+            systemAudio: 'include',
+          },
+          { video: { frameRate: { ideal: 15, max: 30 } }, audio: false },
+          { video: true },
+        ];
+
+    let lastErr = null;
+    for (const constraints of tries) {
+      try {
+        return await navigator.mediaDevices.getDisplayMedia(constraints);
+      } catch (err) {
+        lastErr = err;
+        // cancelar/negar é decisão do usuário: não insiste
+        if (err && (err.name === 'NotAllowedError' || err.name === 'AbortError')) throw err;
+        console.warn('[sala] captura falhou, tentando mais simples:', err && err.name);
+      }
+    }
+    throw lastErr || new Error('captura indisponível');
+  }
+
+  function updateCompatLink() {
+    try {
+      const u = new URL(location.href);
+      u.searchParams.set('compat', '1');
+      compatBrowser.href = `${BASE_PATH}navegador.bat?url=${encodeURIComponent(u.toString())}`;
+    } catch {
+      /* ignora */
+    }
+  }
+
+  function persistCompat(on) {
+    state.compat = !!on;
+    try {
+      localStorage.setItem(LS_COMPAT, state.compat ? '1' : '0');
+    } catch {
+      /* ignora */
+    }
+    updateCompatLink();
+  }
+
+  function toggleShareCompat() {
+    state.compat = true;
+    try {
+      qualitySel.value = 'compat';
+    } catch {
+      /* ignora */
+    }
+    state.maxBitrate = 900000;
+    persistCompat(true);
+    captureWarn.hidden = true;
+    captureHelp.hidden = true;
+    if (state.share.track) {
+      stopShare(true);
+      setTimeout(() => toggleShare(), 400);
+    } else {
+      toggleShare();
+    }
+  }
+
+  /* --- vigilância da captura (tela preta / congelada) ---------------- */
+
+  let watchTimer = 0;
+  let watchCanvas = null;
+  let blackHits = 0;
+  let blackWarned = false;
+  let noFrameHits = 0;
+
+  function sampleLuma(video) {
+    if (!watchCanvas) {
+      watchCanvas = document.createElement('canvas');
+      watchCanvas.width = 64;
+      watchCanvas.height = 36;
+    }
+    const ctx = watchCanvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return null;
+    try {
+      ctx.drawImage(video, 0, 0, 64, 36);
+    } catch {
+      return null;
+    }
+    const { data } = ctx.getImageData(0, 0, 64, 36);
+    let sum = 0;
+    let max = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      const v = (data[i] + data[i + 1] + data[i + 2]) / 3;
+      sum += v;
+      if (v > max) max = v;
+    }
+    return { avg: sum / (64 * 36), max };
+  }
+
+  function stopCaptureWatch() {
+    if (watchTimer) clearInterval(watchTimer);
+    watchTimer = 0;
+    blackHits = 0;
+  }
+
+  function startCaptureWatch() {
+    stopCaptureWatch();
+    blackWarned = false;
+    noFrameHits = 0;
+    let ticks = 0;
+    watchTimer = setInterval(() => {
+      if (!state.share.track) {
+        stopCaptureWatch();
+        return;
+      }
+      ticks += 1;
+      if (ticks < 2) return; // deixa o primeiro frame chegar
+      const video = state.selfTile && state.selfTile.video;
+      if (!video) return;
+
+      // Track existe, mas o vídeo nem carregou dimensões (captura travada).
+      if (!video.videoWidth) {
+        noFrameHits += 1;
+        if (noFrameHits >= 4 && !blackWarned) {
+          blackWarned = true;
+          updateCompatLink();
+          captureWarn.hidden = false;
+          toast('A captura não está gerando imagem neste computador. Veja a dica no topo.', 8000);
+        }
+        return;
+      }
+      noFrameHits = 0;
+
+      const luma = sampleLuma(video);
+      if (!luma) return;
+
+      if (luma.avg < 4 && luma.max < 14) blackHits += 1;
+      else blackHits = 0;
+
+      if (blackHits >= 3 && !blackWarned) {
+        blackWarned = true;
+        updateCompatLink();
+        captureWarn.hidden = false;
+        toast('A captura está saindo preta neste computador. Veja a dica no topo da tela.', 8000);
+      }
+    }, 2000);
+  }
+
+  /* --- vigilância do lado de quem assiste (frames parados) ----------- */
+
+  let peerWatch = 0;
+
+  function startPeerWatch() {
+    if (peerWatch) return;
+    peerWatch = setInterval(() => {
+      for (const p of state.peers.values()) {
+        const video = p.tile.video;
+        const advanced = video.currentTime !== p.lastTime;
+        p.lastTime = video.currentTime;
+
+        if (!p.media.screen) {
+          p.stalls = 0;
+          continue;
+        }
+        p.stalls = advanced ? 0 : (p.stalls || 0) + 1;
+
+        // tela preta no PC de quem compartilha (frames chegam, mas sem imagem)
+        const luma = advanced && video.videoWidth ? sampleLuma(video) : null;
+        if (luma) {
+          if (luma.avg < 4 && luma.max < 14) {
+            p.blackHits = (p.blackHits || 0) + 1;
+            if (p.blackHits >= 3 && !p.blackWarned) {
+              p.blackWarned = true;
+              toast(
+                `A tela de ${p.name} está saindo preta. Peça para usar o modo compatível no PC dela.`,
+                10000
+              );
+            }
+          } else {
+            p.blackHits = 0;
+            p.blackWarned = false;
+          }
+        }
+
+        if (p.stalls === 3) {
+          p.tile.tile.classList.add('stale');
+          p.tile.stateEl.innerHTML = '<span>sem imagem</span>';
+          video.play().catch(() => {});
+        } else if (p.stalls === 0 && p.tile.tile.classList.contains('stale') && p.media.screen) {
+          updatePeerTile(p);
+        }
+      }
+    }, 2500);
+  }
+
   async function toggleShare() {
     if (state.share.track) {
       stopShare();
@@ -806,17 +1206,7 @@
 
     let stream;
     try {
-      stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: 30, max: 60 } },
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-        },
-        selfBrowserSurface: 'exclude',
-        surfaceSwitching: 'include',
-        systemAudio: 'include',
-      });
+      stream = await captureScreen();
     } catch (err) {
       if (err && err.name === 'NotAllowedError') return; // usuário cancelou
       toast('Não foi possível capturar a tela: ' + (err && err.message ? err.message : err), 6000);
@@ -828,7 +1218,7 @@
       toast('Nenhuma tela foi selecionada.');
       return;
     }
-    track.contentHint = 'detail';
+    track.contentHint = state.compat ? 'motion' : 'detail';
 
     state.share = { stream, track };
 
@@ -850,6 +1240,7 @@
     applyLocalMedia();
     updateSelf();
     broadcastMedia();
+    startCaptureWatch();
     if (sysAudio) toast('Compartilhando tela com áudio.');
   }
 
@@ -858,6 +1249,7 @@
     if (!stream) return;
 
     state.share = { stream: null, track: null };
+    stopCaptureWatch();
     for (const t of stream.getTracks()) {
       try {
         t.stop();
@@ -923,6 +1315,347 @@
   }
 
   /* ------------------------------------------------------------------ */
+  /* suporte remoto — painel do cliente                                  */
+  /* ------------------------------------------------------------------ */
+
+  function updateAgentStatus() {
+    const on = !!state.agent.connected;
+    agentStatusEl.classList.toggle('on', on);
+    agentStatusText.textContent = on
+      ? `Agente conectado${state.agent.host ? ' em ' + state.agent.host : ''}.`
+      : 'Agente não conectado.';
+  }
+
+  function requestAgentCode() {
+    if (!state.selfId) return;
+    send({ type: 'agent-code' });
+  }
+
+  function setSupportOpen(open) {
+    supportPanel.hidden = !open;
+    if (open) {
+      updateAgentStatus();
+      if (!state.agent.code) requestAgentCode();
+      else if (!state.agent.connected) requestAgentCode();
+    }
+  }
+
+  async function copyDiagnostics() {
+    const linhas = [];
+    linhas.push('Sala de Tela — diagnóstico');
+    linhas.push('Data: ' + new Date().toISOString());
+    linhas.push('URL: ' + location.href);
+    linhas.push('Sala: ' + (state.room || '-') + ' / papel: ' + state.role);
+    linhas.push('Navegador: ' + navigator.userAgent);
+    linhas.push('Plataforma: ' + (navigator.userAgentData?.platform || navigator.platform || '-'));
+    linhas.push('Idioma: ' + (navigator.language || '-'));
+    linhas.push('Contexto seguro (HTTPS): ' + window.isSecureContext);
+    linhas.push(
+      'getDisplayMedia: ' +
+        !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia)
+    );
+    linhas.push('Tela: ' + screen.width + 'x' + screen.height + ' @' + (window.devicePixelRatio || 1));
+    linhas.push('Modo compatível: ' + state.compat + ' / bitrate: ' + state.maxBitrate);
+
+    if (state.share.track) {
+      const s = state.share.track.getSettings ? state.share.track.getSettings() : {};
+      linhas.push(
+        'Captura: ' +
+          (s.width || '?') +
+          'x' +
+          (s.height || '?') +
+          ' @' +
+          (s.frameRate || '?') +
+          'fps, hint=' +
+          (state.share.track.contentHint || '-') +
+          ', estado=' +
+          state.share.track.readyState
+      );
+      const luma = state.selfTile ? sampleLuma(state.selfTile.video) : null;
+      if (luma) {
+        linhas.push('Luminância local: média=' + luma.avg.toFixed(1) + ' máximo=' + luma.max.toFixed(1));
+      }
+    } else {
+      linhas.push('Captura: parada');
+    }
+
+    for (const p of state.peers.values()) {
+      const conn = p.pc.connectionState || p.pc.iceConnectionState || '?';
+      let recebido = '';
+      try {
+        const stats = await p.pc.getStats();
+        stats.forEach((r) => {
+          if (r.type === 'inbound-rtp' && r.kind === 'video') {
+            recebido =
+              ', recebido=' +
+              (r.bytesReceived || 0) +
+              ' bytes, frames=' +
+              (r.framesDecoded || 0);
+          }
+        });
+      } catch {
+        /* ignora */
+      }
+      linhas.push(
+        'Par ' +
+          p.name +
+          ': ' +
+          conn +
+          ', tela=' +
+          p.media.screen +
+          ', vídeo=' +
+          p.tile.video.videoWidth +
+          'x' +
+          p.tile.video.videoHeight +
+          recebido
+      );
+    }
+    linhas.push('Agente: ' + (state.agent.connected ? 'conectado ' + (state.agent.host || '') : 'desconectado'));
+
+    const texto = linhas.join('\n');
+    try {
+      await navigator.clipboard.writeText(texto);
+      toast('Diagnóstico copiado. Cole no chat para o técnico.', 6000);
+    } catch {
+      window.prompt('Copie o diagnóstico:', texto);
+    }
+  }
+
+  function showControlRequest(name) {
+    ctrlAskWho.textContent = name || 'Um técnico';
+    ctrlAsk.hidden = false;
+  }
+
+  function setCtrlBanner(on, name) {
+    ctrlBanner.hidden = !on;
+    if (on) ctrlBannerText.textContent = `Controle remoto ativo: ${name || 'técnico'}`;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* suporte remoto — lado do técnico                                    */
+  /* ------------------------------------------------------------------ */
+
+  function peerSharing() {
+    for (const p of state.peers.values()) if (p.media.screen) return p;
+    return null;
+  }
+
+  function updateTechBar() {
+    if (state.role !== 'tech') {
+      techBar.hidden = true;
+      return;
+    }
+    const peer = peerSharing();
+    const active = state.tech.status === 'active';
+    const pending = state.tech.status === 'pending';
+    const agentOn = !!(peer && peer.agentConnected);
+
+    techBar.hidden = false;
+    techAskBtn.hidden = active || pending;
+    techAskBtn.disabled = !peer;
+    techAskBtn.textContent = agentOn ? 'Pedir controle' : 'Pedir controle (agente off)';
+    techStatusEl.classList.toggle('on', active);
+    techStatusEl.textContent = active
+      ? state.tech.keys
+        ? 'Controle ativo — teclado sendo enviado'
+        : 'Controle ativo'
+      : pending
+        ? 'Aguardando o cliente autorizar…'
+        : peer
+          ? agentOn
+            ? 'Assistindo a tela (somente leitura)'
+            : 'Assistindo a tela — agente não iniciado no PC'
+          : 'Ninguém está compartilhando a tela';
+
+    techKeysBtn.hidden = !active;
+    techKeysBtn.classList.toggle('active', state.tech.keys);
+    techReleaseBtn.hidden = !active;
+    techPasteEl.hidden = !active;
+  }
+
+  function resetTechControl(notify) {
+    if (state.tech.status === 'idle' && !state.tech.peerId) return;
+    state.tech.status = 'idle';
+    state.tech.keys = false;
+    disableControlCapture();
+    if (notify) toast('Controle encerrado.');
+    updateTechBar();
+  }
+
+  /* ---- captura de mouse/teclado do técnico ------------------------- */
+
+  let ctrlCleanup = null;
+  let moveRaf = 0;
+  let lastMove = null;
+
+  function normPoint(ev, video) {
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+    if (!vw || !vh) return null;
+    const rect = video.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const scale = Math.min(rect.width / vw, rect.height / vh);
+    const dw = vw * scale;
+    const dh = vh * scale;
+    const ox = rect.left + (rect.width - dw) / 2;
+    const oy = rect.top + (rect.height - dh) / 2;
+    const x = (ev.clientX - ox) / dw;
+    const y = (ev.clientY - oy) / dh;
+    if (x < 0 || y < 0 || x > 1 || y > 1) return null;
+    return { x: Math.round(x * 10000) / 10000, y: Math.round(y * 10000) / 10000 };
+  }
+
+  function sendControl(data) {
+    if (state.tech.status !== 'active') return;
+    send({ type: 'control', data });
+  }
+
+  function enableControlCapture() {
+    disableControlCapture();
+    const p = state.peers.get(state.tech.peerId);
+    if (!p) return;
+
+    const { tile } = p.tile;
+    const video = p.tile.video;
+    tile.classList.add('controlling');
+
+    const onMove = (ev) => {
+      const pt = normPoint(ev, video);
+      if (!pt) return;
+      lastMove = pt;
+      if (moveRaf) return;
+      moveRaf = requestAnimationFrame(() => {
+        moveRaf = 0;
+        if (lastMove) sendControl({ t: 'm', x: lastMove.x, y: lastMove.y });
+      });
+    };
+
+    const onDown = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const pt = normPoint(ev, video);
+      if (!pt) return;
+      sendControl({ t: 'm', x: pt.x, y: pt.y });
+      sendControl({ t: 'd', b: ev.button });
+    };
+
+    const onUp = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      sendControl({ t: 'u', b: ev.button });
+    };
+
+    const onWheel = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      sendControl({ t: 'w', dy: ev.deltaY < 0 ? 1 : -1 });
+    };
+
+    const onMenu = (ev) => ev.preventDefault();
+    const onDrag = (ev) => ev.preventDefault();
+
+    tile.addEventListener('pointermove', onMove);
+    tile.addEventListener('pointerdown', onDown);
+    window.addEventListener('pointerup', onUp);
+    tile.addEventListener('wheel', onWheel, { passive: false });
+    tile.addEventListener('contextmenu', onMenu);
+    tile.addEventListener('dragstart', onDrag);
+
+    ctrlCleanup = () => {
+      tile.classList.remove('controlling');
+      tile.removeEventListener('pointermove', onMove);
+      tile.removeEventListener('pointerdown', onDown);
+      window.removeEventListener('pointerup', onUp);
+      tile.removeEventListener('wheel', onWheel);
+      tile.removeEventListener('contextmenu', onMenu);
+      tile.removeEventListener('dragstart', onDrag);
+      ctrlCleanup = null;
+    };
+  }
+
+  function disableControlCapture() {
+    if (moveRaf) {
+      cancelAnimationFrame(moveRaf);
+      moveRaf = 0;
+    }
+    lastMove = null;
+    if (ctrlCleanup) ctrlCleanup();
+  }
+
+  const MOD_VK = { Control: 17, Shift: 16, Alt: 18, Meta: 91, AltGraph: 18 };
+  const SPECIAL_VK = {
+    Enter: 13,
+    Tab: 9,
+    Backspace: 8,
+    Escape: 27,
+    Delete: 46,
+    ArrowUp: 38,
+    ArrowDown: 40,
+    ArrowLeft: 37,
+    ArrowRight: 39,
+    Home: 36,
+    End: 35,
+    PageUp: 33,
+    PageDown: 34,
+    Insert: 45,
+    ' ': 32,
+    CapsLock: 20,
+    NumLock: 144,
+    ScrollLock: 145,
+    PrintScreen: 44,
+    Pause: 19,
+    ContextMenu: 93,
+  };
+  const CODE_VK = {
+    Semicolon: 186,
+    Equal: 187,
+    Comma: 188,
+    Minus: 189,
+    Period: 190,
+    Slash: 191,
+    Backquote: 192,
+    BracketLeft: 219,
+    Backslash: 220,
+    BracketRight: 221,
+    Quote: 222,
+    IntlRo: 193,
+    IntlYen: 226,
+  };
+
+  function keyPayload(ev, down) {
+    if (MOD_VK[ev.key]) return { t: 'k', vk: MOD_VK[ev.key], down };
+    if (SPECIAL_VK[ev.key]) return { t: 'k', vk: SPECIAL_VK[ev.key], down };
+    const fn = /^F([1-9]|1[0-2])$/.exec(ev.key);
+    if (fn) return { t: 'k', vk: 111 + Number(fn[1]), down };
+
+    // com Ctrl/Alt/Win precisamos de código de tecla (senão o atalho não forma)
+    if (ev.ctrlKey || ev.altKey || ev.metaKey) {
+      let vk = 0;
+      if (ev.code && ev.code.startsWith('Key')) vk = ev.code.charCodeAt(3);
+      else if (ev.code && ev.code.startsWith('Digit')) vk = ev.code.charCodeAt(5);
+      else if (ev.code && CODE_VK[ev.code]) vk = CODE_VK[ev.code];
+      return vk ? { t: 'k', vk, down } : null;
+    }
+
+    // texto normal: caractere unicode (funciona com acentos e qualquer layout)
+    if (ev.key.length === 1) return down ? { t: 'k', ch: ev.key } : null;
+    return null;
+  }
+
+  function onRemoteKey(ev, down) {
+    if (state.role !== 'tech' || !state.tech.keys || state.tech.status !== 'active') return;
+    const t = ev.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    if (ev.key === 'F5' || (ev.ctrlKey && ev.key === 'r')) return; // não bloqueia recarregar
+    const payload = keyPayload(ev, down);
+    if (!payload) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    sendControl(payload);
+  }
+
+
+  /* ------------------------------------------------------------------ */
   /* entrada na sala (lobby)                                             */
   /* ------------------------------------------------------------------ */
 
@@ -948,6 +1681,12 @@
 
     state.name = name;
     state.room = room;
+    state.role = techModeEl && techModeEl.checked ? 'tech' : 'client';
+    try {
+      localStorage.setItem(LS_TECH, state.role === 'tech' ? '1' : '0');
+    } catch {
+      /* ignora */
+    }
 
     try {
       const cfg = await fetch(`${BASE_PATH}config.json`, { cache: 'no-store' }).then((r) => r.json());
@@ -985,6 +1724,10 @@
         stage.querySelectorAll('.tile').forEach((el) => el.classList.remove('active'));
       }
     });
+
+    // teclado remoto (só quando o técnico ativou o envio de teclado)
+    window.addEventListener('keydown', (ev) => onRemoteKey(ev, true), true);
+    window.addEventListener('keyup', (ev) => onRemoteKey(ev, false), true);
 
     window.addEventListener('beforeunload', () => {
       try {
@@ -1024,10 +1767,107 @@
   chatToggle.addEventListener('click', () => setChatOpen(!state.chatOpen));
   chatClose.addEventListener('click', () => setChatOpen(false));
 
-  qualitySel.addEventListener('change', () => {
-    state.maxBitrate = Number(qualitySel.value) || 2500000;
-    applyBitrate();
+  /* ---------------- suporte remoto: eventos ---------------- */
+
+  supportBtn.addEventListener('click', () => setSupportOpen(supportPanel.hidden));
+  supportClose.addEventListener('click', () => setSupportOpen(false));
+  agentGenBtn.addEventListener('click', () => {
+    agentCodeEl.textContent = '······';
+    requestAgentCode();
   });
+
+  ctrlAllow.addEventListener('click', () => {
+    const ask = state.pendingAsk;
+    state.pendingAsk = null;
+    ctrlAsk.hidden = true;
+    if (ask) send({ type: 'control-reply', to: ask.techId, allow: true });
+  });
+
+  ctrlDeny.addEventListener('click', () => {
+    const ask = state.pendingAsk;
+    state.pendingAsk = null;
+    ctrlAsk.hidden = true;
+    if (ask) {
+      send({ type: 'control-reply', to: ask.techId, allow: false });
+      toast('Pedido recusado.');
+    }
+  });
+
+  ctrlStopBtn.addEventListener('click', () => {
+    send({ type: 'control-revoke' });
+    setCtrlBanner(false);
+    state.ctrlIn = null;
+    toast('Controle remoto encerrado.');
+  });
+
+  techAskBtn.addEventListener('click', () => {
+    const peer = peerSharing();
+    if (!peer) {
+      toast('Ninguém está compartilhando a tela ainda.', 5000);
+      return;
+    }
+    if (!peer.agentConnected) {
+      toast('O cliente ainda não abriu o agente de suporte. Peça para ele clicar em “Suporte”.', 7000);
+      return;
+    }
+    state.tech.peerId = peer.id;
+    state.tech.status = 'pending';
+    updateTechBar();
+    send({ type: 'control-request', to: peer.id });
+  });
+
+  techReleaseBtn.addEventListener('click', () => {
+    send({ type: 'control-revoke' });
+    state.tech.peerId = null;
+    resetTechControl(false);
+    toast('Você soltou o controle.');
+  });
+
+  techKeysBtn.addEventListener('click', () => {
+    state.tech.keys = !state.tech.keys;
+    updateTechBar();
+    toast(state.tech.keys ? 'Teclado enviado para o PC assistido. Pressione de novo para parar.' : 'Teclado voltou para você.');
+  });
+
+  function sendPaste() {
+    const text = techText.value;
+    if (!text) return;
+    send({ type: 'control-text', text });
+    techText.value = '';
+    toast('Texto enviado para o PC assistido.', 2500);
+  }
+  techTextBtn.addEventListener('click', sendPaste);
+  techText.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      sendPaste();
+    }
+  });
+
+  qualitySel.addEventListener('change', () => {
+    const escolha = qualitySel.value;
+    state.compat = escolha === 'compat';
+    state.maxBitrate = state.compat ? 900000 : Number(escolha) || 2500000;
+    persistCompat(state.compat);
+    applyBitrate();
+    if (state.compat && state.share.track) {
+      // reabre a captura com limites leves
+      stopShare(true);
+      setTimeout(() => toggleShare(), 400);
+      toast('Modo compatível: compartilhe a tela novamente.', 6000);
+    }
+  });
+
+  captureWarnCompat.addEventListener('click', toggleShareCompat);
+  captureWarnHelp.addEventListener('click', () => {
+    captureHelp.hidden = !captureHelp.hidden;
+    if (!captureHelp.hidden) updateCompatLink();
+  });
+  captureWarnClose.addEventListener('click', () => {
+    captureWarn.hidden = true;
+    captureHelp.hidden = true;
+  });
+  diagBtn.addEventListener('click', copyDiagnostics);
 
   chatForm.addEventListener('submit', (ev) => {
     ev.preventDefault();
@@ -1066,12 +1906,27 @@
 
   // ---- inicialização -------------------------------------------------
 
+  const params = new URLSearchParams(location.search);
   nameInput.value = localStorage.getItem(LS_NAME) || '';
-  const salaParam = (new URLSearchParams(location.search).get('sala') || '')
+  const salaParam = (params.get('sala') || '')
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, '')
     .slice(0, 12);
   roomInput.value = salaParam || randomCode();
+
+  const tecnicoParam = params.get('tecnico');
+  const tecnicoSalvo = localStorage.getItem(LS_TECH);
+  techModeEl.checked = tecnicoParam === '1' || (tecnicoParam !== '0' && tecnicoSalvo === '1');
+
+  const compatParam = params.get('compat');
+  const compatSalvo = localStorage.getItem(LS_COMPAT) === '1';
+  const compatInicial = compatParam === '1' || (compatParam !== '0' && compatSalvo);
+  if (compatInicial) {
+    state.compat = true;
+    state.maxBitrate = 900000;
+    qualitySel.value = 'compat';
+  }
+  persistCompat(compatInicial);
 
   if (!window.isSecureContext) insecureWarn.hidden = false;
 

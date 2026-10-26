@@ -42,6 +42,11 @@
         </div>
       </label>
 
+      <label class="check">
+        <input type="checkbox" id="techMode" />
+        <span>Entrar como <strong>técnico</strong> (para dar suporte a outra pessoa)</span>
+      </label>
+
       <button type="submit" id="joinBtn" class="btn primary big">Entrar na sala</button>
       <p id="lobbyMsg" class="form-msg" role="status"></p>
     </form>
@@ -88,9 +93,59 @@
     </div>
   </header>
 
-  <div id="connBanner" class="conn-banner" hidden>
-    <span id="connBannerText">Conexão perdida.</span>
-    <button type="button" class="btn small" onclick="location.reload()">Recarregar</button>
+  <div class="banners" id="banners">
+    <div id="connBanner" class="conn-banner" hidden>
+      <span id="connBannerText">Conexão perdida.</span>
+      <button type="button" class="btn small" onclick="location.reload()">Recarregar</button>
+    </div>
+
+    <div id="ctrlBanner" class="ctrl-banner" hidden>
+      <span class="ctrl-dot" aria-hidden="true"></span>
+      <span id="ctrlBannerText">Controle remoto ativo</span>
+      <button type="button" id="ctrlStopBtn" class="btn small danger">Parar controle</button>
+    </div>
+
+    <div id="techBar" class="tech-bar" hidden>
+      <button type="button" id="techAskBtn" class="btn small primary">Pedir controle</button>
+      <span id="techStatus" class="tech-status">Assistindo a tela</span>
+      <button type="button" id="techKeysBtn" class="btn small" hidden title="Enviar seu teclado para o PC assistido">Teclado</button>
+      <span class="tech-paste" hidden>
+        <input id="techText" type="text" maxlength="400" placeholder="Colar texto no PC assistido…" />
+        <button type="button" id="techTextBtn" class="btn small">Colar</button>
+      </span>
+      <button type="button" id="techReleaseBtn" class="btn small danger" hidden>Soltar controle</button>
+    </div>
+
+    <div id="captureWarn" class="capture-warn" hidden>
+      <div class="capture-warn-row">
+        <span>
+          A captura da tela não está funcionando neste computador (imagem preta ou parada).
+          Isso costuma ser o driver de vídeo ou a aceleração de hardware do navegador.
+        </span>
+        <button type="button" id="captureWarnCompat" class="btn small primary">Usar modo compatível</button>
+        <button type="button" id="captureWarnHelp" class="btn small">Como resolver</button>
+        <button type="button" id="captureWarnClose" class="btn small">Fechar</button>
+      </div>
+      <div id="captureHelp" class="capture-help" hidden>
+        <ol>
+          <li>Clique em <strong>Usar modo compatível</strong> e escolha a tela novamente.</li>
+          <li>No seletor do navegador, escolha <strong>Tela inteira</strong> (não uma janela).</li>
+          <li>
+            Desligue a <strong>aceleração de hardware</strong> em Configurações → Sistema do
+            Chrome/Edge, feche e abra o navegador de novo.
+          </li>
+          <li>
+            Se continuar, <a id="compatBrowser" href="#" download>abra o navegador em modo
+            compatível</a> — baixa um arquivo .bat que abre o Chrome/Edge sem aceleração de
+            hardware, em uma janela separada.
+          </li>
+          <li>
+            Se estiver acessando por área remota (RDP/AnyDesk), mantenha a janela aberta e não
+            minimize durante o compartilhamento.
+          </li>
+        </ol>
+      </div>
+    </div>
   </div>
 
   <main id="mainArea" class="main">
@@ -148,11 +203,22 @@
           <option value="1200000">Econômica</option>
           <option value="2500000" selected>Equilibrada</option>
           <option value="5000000">Alta</option>
+          <option value="compat">Compatível (PC antigo)</option>
         </select>
       </label>
     </div>
 
     <div class="controls-group center">
+      <button type="button" id="supportBtn" class="btn control" title="Permitir que um técnico acesse este computador" hidden>
+        <span class="ico">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3l7 3v5.5c0 4.3-2.9 7.9-7 9.5-4.1-1.6-7-5.2-7-9.5V6l7-3z" />
+            <path d="M9.2 12.2l2 2 3.6-3.7" />
+          </svg>
+        </span>
+        <span class="label">Suporte</span>
+      </button>
+
       <button type="button" id="chatToggle" class="btn control" title="Abrir/fechar chat">
         <span class="ico">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -175,6 +241,61 @@
       </button>
     </div>
   </footer>
+
+  <section id="supportPanel" class="support" hidden aria-label="Suporte remoto">
+    <header class="support-head">
+      <strong>Suporte remoto</strong>
+      <button type="button" id="supportClose" class="icon-btn" title="Fechar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
+      </button>
+    </header>
+
+    <p class="support-text">
+      Para o técnico conseguir mexer no mouse e no teclado, este computador precisa rodar o
+      agente. Nada é instalado: é um arquivo que você abre e fecha quando quiser.
+    </p>
+
+    <ol class="support-steps">
+      <li>Gere o código abaixo.</li>
+      <li>Clique em <strong>Baixar agente</strong> e abra o arquivo <code>agente-suporte.bat</code>.</li>
+      <li>Volte aqui e clique em <strong>Permitir</strong> quando o pedido aparecer.</li>
+    </ol>
+
+    <div class="support-code-row">
+      <span id="agentCode" class="support-code">------</span>
+      <button type="button" id="agentGenBtn" class="btn small">Gerar código</button>
+    </div>
+
+    <a id="agentDownload" class="btn primary support-download" href="#" hidden>Baixar agente</a>
+
+    <p id="agentStatus" class="support-status">
+      <span class="dot"></span><span id="agentStatusText">Agente não conectado.</span>
+    </p>
+
+    <p class="support-hint">
+      Se o Windows avisar que o arquivo é desconhecido, clique em <strong>Mais informações</strong>
+      → <strong>Executar assim mesmo</strong>. O agente não instala nada e só funciona enquanto a
+      janela estiver aberta.
+    </p>
+
+    <button type="button" id="diagBtn" class="btn small support-diag">
+      Copiar diagnóstico (para tela preta)
+    </button>
+  </section>
+
+  <div id="ctrlAsk" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="ctrlAskTitle">
+    <div class="modal-card">
+      <h3 id="ctrlAskTitle">Pedido de controle</h3>
+      <p><strong id="ctrlAskWho">Alguém</strong> quer controlar o mouse e o teclado deste computador.</p>
+      <p class="modal-warn">
+        Só permita se você pediu ajuda a essa pessoa. Você pode parar o controle a qualquer momento.
+      </p>
+      <div class="modal-actions">
+        <button type="button" id="ctrlDeny" class="btn">Negar</button>
+        <button type="button" id="ctrlAllow" class="btn primary">Permitir</button>
+      </div>
+    </div>
+  </div>
 
   <div id="audioSink" hidden></div>
 </section>
