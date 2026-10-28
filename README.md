@@ -226,6 +226,64 @@ Detalhes que importam:
   tela funciona sem nenhum clique extra. O agente também usa `wss://` nesse domínio;
   se o certificado estiver vencido, o agente não conecta.
 
+### 5.1 Apache: threads e conexões WebSocket (importante)
+
+Cada pessoa na sala mantém um **WebSocket** aberto (`/sala/ws`), e o técnico/agente
+usa outro (`/sala/agente`). No Windows, **cada conexão dessas ocupa uma thread** do
+Apache. Com o padrão do XAMPP (`ThreadsPerChild 150`), muitas abas esquecidas ou um
+agente antigo tentando reconectar podem esgotar as 150 threads e o site **para de
+abrir para todo mundo** (inclusive de fora), mesmo com o Node e o Apache "rodando".
+
+Foi o que aconteceu nesta máquina: agentes de teste antigos ficaram reconectando por
+mais de um dia, cada tentativa deixava uma conexão pendurada no Apache até esgotar as
+threads. O agente foi corrigido (fecha o socket com `Abort()` e sai sozinho quando a
+sessão termina), e o Apache foi ajustado.
+
+**Ajustes aplicados (mantenha ao reinstalar/atualizar o XAMPP):**
+
+`C:\xampp\apache\conf\extra\httpd-mpm.conf`, no bloco `mpm_winnt_module`:
+
+```apache
+<IfModule mpm_winnt_module>
+    ThreadsPerChild        512
+    MaxConnectionsPerChild   0
+</IfModule>
+```
+
+`C:\xampp\apache\conf\httpd.conf` (no fim, antes dos `Include`):
+
+```apache
+KeepAlive On
+MaxKeepAliveRequests 50
+KeepAliveTimeout 2
+```
+
+Depois de alterar, valide e reinicie o Apache **a partir do drive C:** (o
+`ServerRoot` do XAMPP é `/xampp/apache`; rodar de `D:` faz o Apache procurar
+`D:\XAMPP`):
+
+```powershell
+cd C:\xampp\apache\bin
+.\httpd.exe -t
+```
+
+Para conferir se as threads estão livres:
+
+```powershell
+Get-Process httpd | ForEach-Object { "pid $($_.Id): threads=$($_.Threads.Count)" }
+```
+
+Se `threads` estiver colado em 512 e o site não abrir, veja quem está conectado:
+
+```powershell
+Get-NetTCPConnection -State Established |
+  Where-Object { $_.OwningProcess -in (Get-Process httpd).Id } |
+  Group-Object RemoteAddress | Sort-Object Count -Descending
+```
+
+Muitas conexões de um único IP local costumam ser abas esquecidas ou um agente velho
+rodando. Feche o agente, recarregue a página e, se precisar, reinicie o Apache.
+
 ## 6. Configurações (variáveis de ambiente)
 
 | Variável      | Padrão | Para quê                                          |
@@ -288,6 +346,8 @@ certs/               certificado e chave gerados (não versionar)
 | “Pedir controle” desabilitado ou agente off | O cliente ainda não abriu o `agente-suporte.bat` ou ele não está compartilhando a tela |
 | Agente não conecta | Código expirado (20 min), data/hora do Windows errada, certificado vencido ou Node parado |
 | Windows bloqueia o `agente-suporte.bat` | **Mais informações** → **Executar assim mesmo**; é um script local, não um instalador |
+| Site não abre de fora, mas o Apache está “rodando” | Threads do Apache esgotadas por conexões WebSocket penduradas: veja o item **5.1** (agentes antigos/abas esquecidas e `ThreadsPerChild`) |
+| Agente fica “reconectando” para sempre | Era um bug antigo: baixe o `agente-suporte.bat` de novo (a versão nova sai sozinha quando a sessão termina) |
 | Página abre, mas o chat fica em “Conectando…” | O Node está parado: rode `publicar.bat` (ou `npm start`) |
 
 ## 10. Privacidade e limites

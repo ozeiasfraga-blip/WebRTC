@@ -194,14 +194,16 @@ if (-not $Codigo) { $Codigo = (Read-Host "  Codigo de acesso").Trim().ToUpper() 
 if (-not $Codigo) { Write-Host "  Sem codigo. Saindo." -ForegroundColor Red; exit 1 }
 
 $codigoAtual = $Codigo
-$avisou = $false
 $ws = $null
+$falhas = 0
+$MAX_FALHAS = 12   # ~2 minutos tentando; depois sai para nao ficar em loop eterno
 
 while ($true) {
+  $conectou = $false
+  $fechadoPeloServidor = $false
+
   try {
-    if (-not $avisou) {
-      Write-Host "  Conectando..." -ForegroundColor DarkGray
-    }
+    Write-Host "  Conectando..." -ForegroundColor DarkGray
     $ws = Connect-Agent ([Uri]$Servidor)
 
     Send-Json $ws @{ type = "hello"; code = $codigoAtual; host = $env:COMPUTERNAME; screen = @{ w = $vs.Width; h = $vs.Height } }
@@ -214,11 +216,12 @@ while ($true) {
       Write-Host ""
       Write-Host ("  " + $hello.reason) -ForegroundColor Yellow
       Write-Host "  Gere um codigo novo na pagina e rode este arquivo de novo." -ForegroundColor Yellow
-      break
+      exit 0
     }
     if ($hello.type -ne "ok") { throw "resposta inesperada do servidor" }
 
-    $avisou = $false
+    $conectou = $true
+    $falhas = 0
     Write-Host ""
     Write-Host "  CONECTADO - o tecnico ja pode controlar este computador." -ForegroundColor Green
     Write-Host "  Deixe esta janela aberta. Feche-a para encerrar na hora." -ForegroundColor DarkGray
@@ -226,7 +229,12 @@ while ($true) {
 
     while ($ws.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
       $raw = Receive-Text $ws
-      if (-not $raw) { break }
+      if (-not $raw) {
+        # O servidor mandou um Close (sala encerrada, cliente saiu, etc.).
+        # Isso e definitivo: nao adianta reconectar com o mesmo codigo.
+        $fechadoPeloServidor = $true
+        break
+      }
 
       $msg = $raw | ConvertFrom-Json
       if ($msg.type -ne "input") { continue }
@@ -254,14 +262,31 @@ while ($true) {
   }
   finally {
     if ($ws) {
+      # Abort fecha o TCP na hora. Dispose sozinho ja deixou conexao pendurada
+      # no Apache em testes antigos (cada tentativa consumia uma thread).
+      try { $ws.Abort() } catch { }
       try { $ws.Dispose() } catch { }
       $ws = $null
     }
   }
 
-  if (-not $avisou) {
-    Write-Host "  Tentando reconectar em 5 segundos (Ctrl+C para sair)..." -ForegroundColor DarkGray
-    $avisou = $true
+  if ($fechadoPeloServidor) {
+    Write-Host ""
+    Write-Host "  A sessao foi encerrada pelo servidor." -ForegroundColor Yellow
+    Write-Host "  Feche esta janela. Se precisar de novo, gere outro codigo na pagina." -ForegroundColor DarkGray
+    exit 0
   }
-  Start-Sleep -Seconds 5
+
+  if ($conectou) { $falhas = 0 } else { $falhas += 1 }
+
+  if ($falhas -ge $MAX_FALHAS) {
+    Write-Host ""
+    Write-Host "  Nao foi possivel conectar depois de varias tentativas." -ForegroundColor Red
+    Write-Host "  Feche esta janela, gere um codigo novo na pagina e abra o agente de novo." -ForegroundColor Yellow
+    exit 1
+  }
+
+  $espera = if ($falhas -gt 3) { 15 } else { 5 }
+  Write-Host ("  Tentando reconectar em " + $espera + "s (tentativa " + $falhas + "/" + $MAX_FALHAS + ", Ctrl+C para sair)...") -ForegroundColor DarkGray
+  Start-Sleep -Seconds $espera
 }
