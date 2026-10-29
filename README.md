@@ -7,6 +7,7 @@ programa para quem assiste: é só abrir o link no navegador.
 - Compartilha **tela + áudio do sistema** (aba, janela ou tela inteira)
 - **Chat** de texto com histórico da sessão e aviso de mensagens novas
 - **Microfone** opcional (com cancelamento de eco)
+- **Botão Som**: silencia o áudio **que você ouve** (só no seu navegador; o outro lado continua normal)
 - **Suporte remoto**: o técnico vê a tela e, com autorização, controla mouse e teclado
 - Modo **Compatível** para PCs antigos que capturam tela preta
 - Salas por código, link de convite com um clique

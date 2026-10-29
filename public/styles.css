@@ -907,6 +907,15 @@ kbd {
   display: block;
 }
 
+#audioBtn .ico .off,
+#audioBtn.off .ico .on {
+  display: none;
+}
+
+#audioBtn.off .ico .off {
+  display: block;
+}
+
 .quality {
   display: inline-flex;
   align-items: center;

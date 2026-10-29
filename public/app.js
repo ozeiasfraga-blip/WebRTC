@@ -20,6 +20,7 @@
   const LS_NAME = 'sala-de-tela:nome';
   const LS_TECH = 'sala-de-tela:tecnico';
   const LS_COMPAT = 'sala-de-tela:compat';
+  const LS_MUTE = 'sala-de-tela:mudo';
   const AUDIO_MAX = 1; // ganho máximo do mix
 
   // Funciona tanto na raiz (localhost:8090) quanto em subpasta (ex.: /sala/ no Apache).
@@ -59,6 +60,7 @@
     mix: { ctx: null, dest: null, micGain: null, screenGain: null, micSrc: null, screenSrc: null, track: null },
     maxBitrate: 2500000,
     compat: false,
+    muted: false, // mudo do áudio RECEBIDO (só afeta este navegador)
     chatOpen: false,
     unread: 0,
     spotlightId: null,
@@ -96,6 +98,7 @@
 
   const sharingBtn = $('#shareBtn');
   const micBtn = $('#micBtn');
+  const audioBtn = $('#audioBtn');
   const leaveBtn = $('#leaveBtn');
   const qualitySel = $('#qualitySel');
   const chatToggle = $('#chatToggle');
@@ -654,6 +657,23 @@
     }
   }
 
+  /* --- som: mudo do áudio que EU ouço (não afeta quem está do outro lado) */
+  function applyAudioMute() {
+    if (audioBtn) audioBtn.classList.toggle('off', state.muted);
+    if (!audioSink) return;
+    audioSink.querySelectorAll('audio').forEach((el) => {
+      el.muted = state.muted;
+      if (!state.muted) el.play().catch(() => {});
+    });
+  }
+
+  function toggleAudio() {
+    state.muted = !state.muted;
+    try { localStorage.setItem(LS_MUTE, state.muted ? '1' : '0'); } catch (e) { /* ignora */ }
+    applyAudioMute();
+    toast(state.muted ? 'Som silenciado — você não ouve mais a sala.' : 'Som ativado.');
+  }
+
   function updatePeerTile(p) {
     const sharing = !!p.media.screen;
     p.tile.tile.classList.toggle('no-video', !sharing);
@@ -718,6 +738,7 @@
     audio.playsInline = true;
     audio.srcObject = new MediaStream();
     audioSink.appendChild(audio);
+    audio.muted = state.muted;
     p.audioEl = audio;
 
     pc.ontrack = (ev) => {
@@ -1763,6 +1784,7 @@
 
   sharingBtn.addEventListener('click', toggleShare);
   micBtn.addEventListener('click', toggleMic);
+  if (audioBtn) audioBtn.addEventListener('click', toggleAudio);
   leaveBtn.addEventListener('click', leave);
   chatToggle.addEventListener('click', () => setChatOpen(!state.chatOpen));
   chatClose.addEventListener('click', () => setChatOpen(false));
@@ -1927,6 +1949,10 @@
     qualitySel.value = 'compat';
   }
   persistCompat(compatInicial);
+
+  // mudo do som recebido (lembra a escolha entre visitas)
+  state.muted = localStorage.getItem(LS_MUTE) === '1';
+  applyAudioMute();
 
   if (!window.isSecureContext) insecureWarn.hidden = false;
 
