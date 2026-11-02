@@ -1702,10 +1702,9 @@
 
     state.name = name;
     state.room = room;
-    state.role = techModeEl && techModeEl.checked ? 'tech' : 'client';
+    state.role = 'client';   // modo tecnico removido do site
     try {
-      localStorage.setItem(LS_TECH, state.role === 'tech' ? '1' : '0');
-    } catch {
+        } catch {
       /* ignora */
     }
 
@@ -1935,10 +1934,6 @@
     .replace(/[^A-Z0-9]/g, '')
     .slice(0, 12);
   roomInput.value = salaParam || randomCode();
-
-  const tecnicoParam = params.get('tecnico');
-  const tecnicoSalvo = localStorage.getItem(LS_TECH);
-  techModeEl.checked = tecnicoParam === '1' || (tecnicoParam !== '0' && tecnicoSalvo === '1');
 
   const compatParam = params.get('compat');
   const compatSalvo = localStorage.getItem(LS_COMPAT) === '1';
